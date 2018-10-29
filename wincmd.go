@@ -1,7 +1,6 @@
 package wincmd
 
 import (
-	//"encoding/binary"
 	"bytes"
 	"fmt"
 	"io/ioutil"
@@ -9,13 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	//"regexp"
-	//"strings"
-	"syscall"
 	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/northbright/byteorder"
+	"github.com/northbright/uuid"
 )
 
 var (
@@ -66,44 +63,48 @@ func DecodeUTF16(buf []byte) (string, error) {
 	return b.String(), nil
 }
 
+// GetTempPath gets the TEMP path on Windows.
 func GetTempPath() string {
 	return os.Getenv("TEMP")
 }
 
-// RunCmd runs a command in powershell and return exit code and combined output in UTF-8.
-func RunCmd(name string, args ...string) (int, []byte, error) {
+// Run runs a command and returns its combined standard output and standard error in UTF-8.
+func Run(name string, args ...string) (string, error) {
 	var (
-		ws          syscall.WaitStatus
+		err         error
 		updatedArgs []string
 	)
 
-	logFile := path.Join(GetTempPath(), "wincmd-log.txt")
+	// Use UUID as random log file name
+	randFileName, _ := uuid.New()
+	logFile := path.Join(GetTempPath(), fmt.Sprintf("%s.txt", randFileName))
 
 	updatedArgs = append(updatedArgs, name)
 	updatedArgs = append(updatedArgs, args...)
-	updatedArgs = append(updatedArgs, ">", logFile)
+	updatedArgs = append(updatedArgs, ">", logFile, "2>&1")
 
 	cmd := exec.Command("powershell.exe", updatedArgs...)
+
+	cmd.Env = append(os.Environ())
+	if _, err = cmd.CombinedOutput(); err != nil {
+		return "", err
+	}
 
 	buf, err := ioutil.ReadFile(logFile)
 	if err != nil {
 		log.Printf("ReadFile() error: %v", err)
-		return 0, nil, err
+		return "", err
 	}
 
-	str, err := DecodeUTF16(buf)
-	log.Printf("DecodeUTF16(): %s, error: %v", str, err)
-
-	cmd.Env = append(os.Environ())
-	output, err := cmd.CombinedOutput()
-
+	output, err := DecodeUTF16(buf)
+	log.Printf("DecodeUTF16(): %s, error: %v", output, err)
 	if err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			ws = exitError.Sys().(syscall.WaitStatus)
-			return ws.ExitStatus(), output, nil
-		}
-		return 0, output, err
+		return "", err
 	}
-	ws = cmd.ProcessState.Sys().(syscall.WaitStatus)
-	return ws.ExitStatus(), output, nil
+
+	if err = os.Remove(logFile); err != nil {
+		return "", err
+	}
+
+	return output, nil
 }
